@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Antigravity Remote</string>
+    <string name="channel_alerts_name">Alertas del Agente</string>
+    <string name="channel_alerts_desc">Notificaciones cuando un agente termina una tarea o necesita tu aprobación.</string>
+    <string name="channel_keepalive_name">Conexión en segundo plano</string>
+    <string name="channel_keepalive_desc">Mantiene la sesión de Antigravity Remote activa para que no se cierre al cambiar de app.</string>
+</resources>

@@ -1,0 +1,35 @@
+/* Non-destructive mobile comfort rules for Antigravity Remote.
+ * All rules are scoped behind html.ag-comfort-enabled so the user can toggle
+ * between enhanced mobile mode and 100% stock web CSS at any time.
+ */
+
+html.ag-comfort-enabled,
+html.ag-comfort-enabled body {
+  overscroll-behavior-y: contain !important;
+  -webkit-tap-highlight-color: rgba(138, 180, 248, 0.16);
+}
+
+html.ag-comfort-enabled button,
+html.ag-comfort-enabled [role="button"],
+html.ag-comfort-enabled a,
+html.ag-comfort-enabled input,
+html.ag-comfort-enabled textarea {
+  touch-action: manipulation;
+}
+
+/* Smooth horizontal scrolling for wide code blocks & diffs on mobile */
+html.ag-comfort-enabled pre,
+html.ag-comfort-enabled code {
+  -webkit-overflow-scrolling: touch;
+}
+
+html.ag-comfort-enabled pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Clean slim dark scrollbars matching Antigravity #1f1f1f theme */
+html.ag-comfort-enabled * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232, 234, 237, 0.22) transparent;
+}

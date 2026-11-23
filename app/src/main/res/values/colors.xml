@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ag_background">#1F1F1F</color>
+    <color name="ag_surface">#26262B</color>
+    <color name="ag_surface_elevated">#2F3037</color>
+    <color name="ag_accent">#8AB4F8</color>
+    <color name="ag_accent_secondary">#C58AF9</color>
+    <color name="ag_on_surface">#E8EAED</color>
+    <color name="ag_icon_bg">#141418</color>
+</resources>

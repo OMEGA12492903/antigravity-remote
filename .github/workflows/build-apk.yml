@@ -1,0 +1,81 @@
+name: Compilar y Publicar Antigravity Remote APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Compilar AntigravityRemote-arm64.apk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar keystore de firma (si existe secret)
+        if: ${{ secrets.SIGNING_KEYSTORE_B64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          mkdir -p "$HOME/.local/share/noctalia-android-toolchain/keys"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$HOME/.local/share/noctalia-android-toolchain/keys/antigravity-remote-release.jks"
+          cat > "$HOME/.local/share/noctalia-android-toolchain/keys/antigravity-remote-keystore.properties" <<EOF
+          storeFile=$HOME/.local/share/noctalia-android-toolchain/keys/antigravity-remote-release.jks
+          storePassword=$KEYSTORE_PASS
+          keyAlias=antigravity-remote
+          keyPassword=$KEYSTORE_PASS
+          EOF
+
+      - name: Ejecutar tests unitarios de seguridad
+        run: gradle testDebugUnitTest --no-daemon
+
+      - name: Compilar APK Release (arm64-v8a)
+        run: gradle assembleRelease --no-daemon
+
+      - name: Extraer metadatos de versión
+        id: ver
+        run: |
+          VNAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n1)
+          VCODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts | head -n1)
+          echo "vname=$VNAME" >> "$GITHUB_OUTPUT"
+          echo "vcode=$VCODE" >> "$GITHUB_OUTPUT"
+          mkdir -p release-apk
+          cp app/build/outputs/apk/release/app-release.apk release-apk/AntigravityRemote-arm64.apk
+          ls -lh release-apk/AntigravityRemote-arm64.apk
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: AntigravityRemote-arm64-apk
+          path: release-apk/AntigravityRemote-arm64.apk
+          retention-days: 30
+
+      - name: Publicar Release en GitHub (tag latest, solo con keystore oficial)
+        if: ${{ github.event_name == 'push' && secrets.SIGNING_KEYSTORE_B64 != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Antigravity Remote v${{ steps.ver.outputs.vname }}"
+          body: |
+            Antigravity Remote Android **v${{ steps.ver.outputs.vname }}** (versionCode: ${{ steps.ver.outputs.vcode }})
+            Compilado automáticamente desde `${{ github.sha }}`.
+          files: release-apk/AntigravityRemote-arm64.apk
+          overwrite_files: true
+          make_latest: true

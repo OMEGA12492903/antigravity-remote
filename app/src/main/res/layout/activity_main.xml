@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootContainer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ag_background"
+    android:orientation="vertical">
+
+    <FrameLayout
+        android:id="@+id/webContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/ag_background">
+
+        <!-- Main Antigravity Remote GeckoView -->
+        <org.mozilla.geckoview.GeckoView
+            android:id="@+id/geckoView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/ag_background" />
+
+        <!-- In-app popup container for Google OAuth / auth windows -->
+        <LinearLayout
+            android:id="@+id/popupContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/ag_background"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <androidx.compose.ui.platform.ComposeView
+                android:id="@+id/popupHeaderCompose"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <org.mozilla.geckoview.GeckoView
+                android:id="@+id/popupGeckoView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:background="@color/ag_background" />
+        </LinearLayout>
+
+        <!-- Transparent Compose overlay: progress bar, floating pill, error view, splash, sheets -->
+        <androidx.compose.ui.platform.ComposeView
+            android:id="@+id/overlayCompose"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
+
+    <!-- Optional fixed slim bottom dock (takes 0dp when floating pill mode is active) -->
+    <androidx.compose.ui.platform.ComposeView
+        android:id="@+id/bottomDockCompose"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+</LinearLayout>
