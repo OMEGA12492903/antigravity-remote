@@ -2,9 +2,9 @@ package com.omegax.antigravityremote
 
 import android.content.Intent
 import android.net.Uri
-import android.webkit.MimeTypeMap
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import org.mozilla.geckoview.AllowOrDeny
@@ -16,16 +16,22 @@ import org.mozilla.geckoview.GeckoSession.PromptDelegate.BeforeUnloadPrompt
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.ButtonPrompt
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.ChoicePrompt
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.FilePrompt
+import org.mozilla.geckoview.GeckoSession.PromptDelegate.FolderUploadPrompt
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.PromptResponse
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.SharePrompt
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.TextPrompt
+import java.util.concurrent.ExecutorService
 
 class GeckoPromptHandler(
     private val activity: AppCompatActivity,
+    private val ioExecutor: ExecutorService,
     private val launchFilePicker: (
         allowMultiple: Boolean,
         mimeTypes: Array<String>,
         callback: (List<Uri>) -> Unit
+    ) -> Unit,
+    private val launchFolderPicker: (
+        callback: (Uri?) -> Unit
     ) -> Unit
 ) : PromptDelegate {
 
@@ -40,17 +46,80 @@ class GeckoPromptHandler(
             result.complete(prompt.dismiss())
             return result
         }
+
+        if (prompt.type == FilePrompt.Type.FOLDER) {
+            launchFolderPicker { treeUri ->
+                activity.runOnUiThread {
+                    if (treeUri == null) {
+                        result.complete(prompt.dismiss())
+                    } else {
+                        result.complete(prompt.confirm(activity, treeUri))
+                    }
+                }
+            }
+            return result
+        }
+
         val allowMultiple = prompt.type == FilePrompt.Type.MULTIPLE
-        val normalizedMimes = normalizeMimeTypes(prompt.mimeTypes)
+        val normalizedMimes = UploadFileStaging.normalizePickerMimeTypes(prompt.mimeTypes)
 
         launchFilePicker(allowMultiple, normalizedMimes) { uris ->
             if (uris.isEmpty()) {
-                result.complete(prompt.dismiss())
-            } else if (allowMultiple) {
-                result.complete(prompt.confirm(activity, uris.toTypedArray()))
-            } else {
-                result.complete(prompt.confirm(activity, uris.first()))
+                activity.runOnUiThread { result.complete(prompt.dismiss()) }
+                return@launchFilePicker
             }
+
+            // Copy Android content:// URIs to readable local cache files so GeckoView
+            // receives direct file:// paths that always work under Android 11–17 Scoped Storage.
+            val appCtx = activity.applicationContext
+            ioExecutor.execute {
+                val stagedFileUris = UploadFileStaging.stageUrisToLocalFiles(appCtx, uris)
+                activity.runOnUiThread {
+                    if (stagedFileUris.isEmpty()) {
+                        if (isActivityUsable()) {
+                            Toast.makeText(
+                                activity,
+                                "No se pudo leer el archivo seleccionado",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        result.complete(prompt.dismiss())
+                    } else if (allowMultiple) {
+                        result.complete(prompt.confirm(activity, stagedFileUris.toTypedArray()))
+                    } else {
+                        result.complete(prompt.confirm(activity, stagedFileUris.first()))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    override fun onFolderUploadPrompt(
+        session: GeckoSession,
+        prompt: FolderUploadPrompt
+    ): GeckoResult<PromptResponse> {
+        val result = GeckoResult<PromptResponse>()
+        activity.runOnUiThread {
+            if (!isActivityUsable()) {
+                result.complete(prompt.dismiss())
+                return@runOnUiThread
+            }
+            val dirName = SecurityPolicy.sanitizePromptText(prompt.directoryName, 120)
+                .ifBlank { "esta carpeta" }
+            AlertDialog.Builder(activity, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
+                .setTitle("¿Subir carpeta?")
+                .setMessage("Se subirán todos los archivos dentro de \"$dirName\".")
+                .setPositiveButton("Subir") { _, _ ->
+                    result.complete(prompt.confirm(AllowOrDeny.ALLOW))
+                }
+                .setNegativeButton("Cancelar") { _, _ ->
+                    result.complete(prompt.confirm(AllowOrDeny.DENY))
+                }
+                .setOnCancelListener {
+                    result.complete(prompt.confirm(AllowOrDeny.DENY))
+                }
+                .show()
         }
         return result
     }
@@ -285,25 +354,5 @@ class GeckoPromptHandler(
             }
         }
         return out
-    }
-
-    private fun normalizeMimeTypes(raw: Array<String>?): Array<String> {
-        if (raw.isNullOrEmpty()) return arrayOf("*/*")
-        val resolved = mutableSetOf<String>()
-        val map = MimeTypeMap.getSingleton()
-        for (entry in raw) {
-            val trimmed = entry.trim()
-            if (trimmed.isEmpty()) continue
-            when {
-                trimmed == "*/*" -> return arrayOf("*/*")
-                trimmed.contains("/") -> resolved.add(trimmed)
-                trimmed.startsWith(".") -> {
-                    val mime = map.getMimeTypeFromExtension(trimmed.removePrefix(".").lowercase())
-                    if (mime != null) resolved.add(mime) else return arrayOf("*/*")
-                }
-                else -> return arrayOf("*/*")
-            }
-        }
-        return if (resolved.isEmpty()) arrayOf("*/*") else resolved.toTypedArray()
     }
 }

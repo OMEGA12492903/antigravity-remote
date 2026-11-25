@@ -69,6 +69,7 @@ class AntigravityApp : Application() {
         installCrashHandler()
         lastKnownUrl = prefs.homeUrl
         NotificationHelper.ensureChannels(this)
+        ioExecutor.execute { UploadFileStaging.cleanupOldUploads(applicationContext) }
     }
 
     private fun isMainProcess(): Boolean {

@@ -85,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     // Separate ActivityResult callbacks so notification prompts never collide with GeckoView prompts
     private var pendingGeckoPermissionCallback: PermissionDelegate.Callback? = null
     private var pendingFileCallback: ((List<Uri>) -> Unit)? = null
+    private var pendingFolderCallback: ((Uri?) -> Unit)? = null
     private var pendingActivityResult: GeckoResult<Intent>? = null
     private var pendingEnableKeepAliveAfterPermission = false
 
@@ -130,6 +131,14 @@ class MainActivity : AppCompatActivity() {
         val cb = pendingFileCallback
         pendingFileCallback = null
         cb?.invoke(uris ?: emptyList())
+    }
+
+    private val folderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val cb = pendingFolderCallback
+        pendingFolderCallback = null
+        cb?.invoke(uri)
     }
 
     private val intentSenderLauncher = registerForActivityResult(
@@ -250,6 +259,8 @@ class MainActivity : AppCompatActivity() {
         pendingGeckoPermissionCallback = null
         pendingFileCallback?.invoke(emptyList())
         pendingFileCallback = null
+        pendingFolderCallback?.invoke(null)
+        pendingFolderCallback = null
         pendingActivityResult?.completeExceptionally(IllegalStateException("Activity destroyed"))
         pendingActivityResult = null
 
@@ -806,21 +817,35 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        session.promptDelegate = GeckoPromptHandler(this) { allowMultiple, mimeTypes, callback ->
-            // Dismiss any previous unresolved file prompt before launching a new one
-            pendingFileCallback?.invoke(emptyList())
-            pendingFileCallback = callback
-            try {
-                if (allowMultiple) {
-                    multiFilePickerLauncher.launch(mimeTypes)
-                } else {
-                    singleFilePickerLauncher.launch(mimeTypes)
+        session.promptDelegate = GeckoPromptHandler(
+            activity = this,
+            ioExecutor = app.ioExecutor,
+            launchFilePicker = { allowMultiple, mimeTypes, callback ->
+                // Dismiss any previous unresolved file prompt before launching a new one
+                pendingFileCallback?.invoke(emptyList())
+                pendingFileCallback = callback
+                try {
+                    if (allowMultiple) {
+                        multiFilePickerLauncher.launch(mimeTypes)
+                    } else {
+                        singleFilePickerLauncher.launch(mimeTypes)
+                    }
+                } catch (_: Exception) {
+                    pendingFileCallback = null
+                    callback(emptyList())
                 }
-            } catch (_: Exception) {
-                pendingFileCallback = null
-                callback(emptyList())
+            },
+            launchFolderPicker = { callback ->
+                pendingFolderCallback?.invoke(null)
+                pendingFolderCallback = callback
+                try {
+                    folderPickerLauncher.launch(null)
+                } catch (_: Exception) {
+                    pendingFolderCallback = null
+                    callback(null)
+                }
             }
-        }
+        )
     }
 
     private fun attachBridgeDelegate(session: GeckoSession) {
