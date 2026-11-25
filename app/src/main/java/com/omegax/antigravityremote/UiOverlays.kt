@@ -34,12 +34,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
@@ -145,7 +149,9 @@ data class RemoteUiState(
     val checkingUpdate: Boolean = false,
     val downloadingUpdate: Boolean = false,
     val downloadProgress: Float = 0f,
-    val updateStatusMessage: String? = null
+    val updateStatusMessage: String? = null,
+    val showAttachChooser: Boolean = false,
+    val attachAllowsMultiple: Boolean = false
 )
 
 data class RemoteActions(
@@ -154,6 +160,11 @@ data class RemoteActions(
     val onHome: () -> Unit,
     val onScrollToBottom: () -> Unit,
     val onFocusInput: () -> Unit,
+    val onQuickAttachPhoto: () -> Unit,
+    val onAttachFromGallery: () -> Unit,
+    val onAttachFromCamera: () -> Unit,
+    val onAttachFromFiles: () -> Unit,
+    val onDismissAttachChooser: () -> Unit,
     val onOpenSheet: () -> Unit,
     val onDismissSheet: () -> Unit,
     val onToggleDesktopMode: (Boolean) -> Unit,
@@ -240,6 +251,17 @@ fun MainOverlayContent(
             // 5. Full Quick Controls Bottom Sheet
             if (state.showControlSheet) {
                 QuickControlSheet(state = state, actions = actions)
+            }
+
+            // 6. Fast Photo / Camera / File Attach Chooser Sheet
+            if (state.showAttachChooser) {
+                AttachChooserSheet(
+                    allowMultiple = state.attachAllowsMultiple,
+                    onGallery = actions.onAttachFromGallery,
+                    onCamera = actions.onAttachFromCamera,
+                    onFiles = actions.onAttachFromFiles,
+                    onDismiss = actions.onDismissAttachChooser
+                )
             }
         }
     }
@@ -328,9 +350,10 @@ fun BottomQuickDock(
                         onClick = actions.onBack
                     )
                     DockIconButton(
-                        icon = Icons.Rounded.Home,
-                        label = "Inicio",
-                        onClick = actions.onHome
+                        icon = Icons.Rounded.AddPhotoAlternate,
+                        label = "Foto rápida",
+                        tint = AgAccent,
+                        onClick = actions.onQuickAttachPhoto
                     )
                     DockIconButton(
                         icon = Icons.Rounded.ArrowDownward,
@@ -537,6 +560,14 @@ private fun ExpandedQuickActions(
                 ) {
                     onCollapse()
                     actions.onBack()
+                }
+                MiniActionBtn(
+                    icon = Icons.Rounded.AddPhotoAlternate,
+                    desc = "Enviar foto",
+                    tint = AgEmerald
+                ) {
+                    onCollapse()
+                    actions.onQuickAttachPhoto()
                 }
                 MiniActionBtn(
                     icon = Icons.Rounded.ArrowDownward,
@@ -771,6 +802,10 @@ private fun QuickControlSheet(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
+                QuickActionChip(Icons.Rounded.AddPhotoAlternate, "Enviar foto") {
+                    actions.onDismissSheet()
+                    actions.onQuickAttachPhoto()
+                }
                 QuickActionChip(Icons.Rounded.Home, "Inicio") {
                     actions.onDismissSheet()
                     actions.onHome()
@@ -957,6 +992,121 @@ private fun QuickControlSheet(
                 }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AttachChooserSheet(
+    allowMultiple: Boolean,
+    onGallery: () -> Unit,
+    onCamera: () -> Unit,
+    onFiles: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = AgSurface,
+        contentColor = AgText
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = if (allowMultiple) "Adjuntar fotos o archivos" else "Adjuntar al chat",
+                color = AgText,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "Elige la forma más rápida de subir contenido:",
+                color = AgTextMuted,
+                fontSize = 13.sp
+            )
+
+            AttachOptionCard(
+                icon = Icons.Rounded.PhotoLibrary,
+                iconTint = AgAccent,
+                title = "Galería y capturas",
+                subtitle = if (allowMultiple) "Selector rápido de fotos y capturas recientes (varias a la vez)" else "Selector rápido de fotos y capturas recientes",
+                onClick = onGallery
+            )
+
+            AttachOptionCard(
+                icon = Icons.Rounded.CameraAlt,
+                iconTint = AgEmerald,
+                title = "Hacer foto ahora",
+                subtitle = "Abre la cámara y adjunta la foto directamente",
+                onClick = onCamera
+            )
+
+            AttachOptionCard(
+                icon = Icons.Rounded.FolderOpen,
+                iconTint = AgViolet,
+                title = "Explorar archivos",
+                subtitle = "PDF, código, ZIP, descargas o Google Drive",
+                onClick = onFiles
+            )
+        }
+    }
+}
+
+@Composable
+private fun AttachOptionCard(
+    icon: ImageVector,
+    iconTint: Color,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = AgSurfaceElevated,
+        border = BorderStroke(1.dp, AgBorder.copy(alpha = 0.8f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(iconTint.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = AgText,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = subtitle,
+                    color = AgTextMuted,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            }
+        }
     }
 }
 

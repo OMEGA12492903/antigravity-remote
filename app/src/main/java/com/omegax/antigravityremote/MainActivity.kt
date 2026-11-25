@@ -25,6 +25,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -39,6 +40,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
@@ -85,9 +87,13 @@ class MainActivity : AppCompatActivity() {
     // Separate ActivityResult callbacks so notification prompts never collide with GeckoView prompts
     private var pendingGeckoPermissionCallback: PermissionDelegate.Callback? = null
     private var pendingFileCallback: ((List<Uri>) -> Unit)? = null
+    private var pendingAttachAllowMultiple: Boolean = false
+    private var pendingAttachMimeTypes: Array<String> = arrayOf("*/*")
+    private var pendingCameraFile: File? = null
     private var pendingFolderCallback: ((Uri?) -> Unit)? = null
     private var pendingActivityResult: GeckoResult<Intent>? = null
     private var pendingEnableKeepAliveAfterPermission = false
+    private var pendingSharedImageUris: List<Uri> = emptyList()
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -139,6 +145,61 @@ class MainActivity : AppCompatActivity() {
         val cb = pendingFolderCallback
         pendingFolderCallback = null
         cb?.invoke(uri)
+    }
+
+    // Modern Android Photo Picker (fast gallery + screenshots grid)
+    private val singlePhotoPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        val cb = pendingFileCallback
+        pendingFileCallback = null
+        cb?.invoke(if (uri != null) listOf(uri) else emptyList())
+    }
+
+    private val multiPhotoPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(10)
+    ) { uris ->
+        val cb = pendingFileCallback
+        pendingFileCallback = null
+        cb?.invoke(uris ?: emptyList())
+    }
+
+    // Dedicated 1-tap quick photo picker (attaches directly into active chat via bridge)
+    private val quickPhotoPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(5)
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            injectImagesIntoChat(uris)
+        }
+    }
+
+    // Direct camera capture into private cache file
+    private val takePictureLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        val file = pendingCameraFile
+        pendingCameraFile = null
+        val cb = pendingFileCallback
+        pendingFileCallback = null
+        if (success && file != null && file.exists() && file.length() > 0L) {
+            cb?.invoke(listOf(Uri.fromFile(file)))
+        } else {
+            file?.delete()
+            cb?.invoke(emptyList())
+        }
+    }
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraCapture()
+        } else {
+            val cb = pendingFileCallback
+            pendingFileCallback = null
+            cb?.invoke(emptyList())
+            Toast.makeText(this, "Permiso de cámara denegado", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private val intentSenderLauncher = registerForActivityResult(
@@ -217,6 +278,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         handleIntentExtras(intent)
+        handleIncomingShareIntent(intent)
 
         // Silent background check once per app process so an update badge appears automatically
         if (!app.hasCheckedUpdateOnce) {
@@ -236,6 +298,7 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntentExtras(intent)
+        handleIncomingShareIntent(intent)
         val deepUrl = extractIncomingUrl(intent)
         if (!deepUrl.isNullOrBlank()) {
             mainSession.loadUri(deepUrl)
@@ -348,6 +411,58 @@ class MainActivity : AppCompatActivity() {
             },
             onFocusInput = {
                 sendBridgeAction("focusInput")
+            },
+            onQuickAttachPhoto = {
+                if (!SecurityPolicy.isStrictAntigravityOrigin(uiState.currentUrl)) {
+                    Toast.makeText(this, "Abre un chat de Antigravity primero", Toast.LENGTH_SHORT).show()
+                } else {
+                    try {
+                        quickPhotoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    } catch (_: Exception) {
+                        Toast.makeText(this, "No se pudo abrir la galería", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onAttachFromGallery = {
+                uiState = uiState.copy(showAttachChooser = false)
+                try {
+                    val req = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    if (pendingAttachAllowMultiple) {
+                        multiPhotoPickerLauncher.launch(req)
+                    } else {
+                        singlePhotoPickerLauncher.launch(req)
+                    }
+                } catch (_: Exception) {
+                    val cb = pendingFileCallback
+                    pendingFileCallback = null
+                    cb?.invoke(emptyList())
+                }
+            },
+            onAttachFromCamera = {
+                uiState = uiState.copy(showAttachChooser = false)
+                launchCameraWithPermissionCheck()
+            },
+            onAttachFromFiles = {
+                uiState = uiState.copy(showAttachChooser = false)
+                try {
+                    if (pendingAttachAllowMultiple) {
+                        multiFilePickerLauncher.launch(pendingAttachMimeTypes)
+                    } else {
+                        singleFilePickerLauncher.launch(pendingAttachMimeTypes)
+                    }
+                } catch (_: Exception) {
+                    val cb = pendingFileCallback
+                    pendingFileCallback = null
+                    cb?.invoke(emptyList())
+                }
+            },
+            onDismissAttachChooser = {
+                uiState = uiState.copy(showAttachChooser = false)
+                val cb = pendingFileCallback
+                pendingFileCallback = null
+                cb?.invoke(emptyList())
             },
             onOpenSheet = {
                 uiState = uiState.copy(showControlSheet = true)
@@ -821,18 +936,21 @@ class MainActivity : AppCompatActivity() {
             activity = this,
             ioExecutor = app.ioExecutor,
             launchFilePicker = { allowMultiple, mimeTypes, callback ->
-                // Dismiss any previous unresolved file prompt before launching a new one
+                // Dismiss any previous unresolved file prompt before showing the fast attach chooser
                 pendingFileCallback?.invoke(emptyList())
                 pendingFileCallback = callback
-                try {
-                    if (allowMultiple) {
-                        multiFilePickerLauncher.launch(mimeTypes)
+                pendingAttachAllowMultiple = allowMultiple
+                pendingAttachMimeTypes = mimeTypes
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        uiState = uiState.copy(
+                            showAttachChooser = true,
+                            attachAllowsMultiple = allowMultiple
+                        )
                     } else {
-                        singleFilePickerLauncher.launch(mimeTypes)
+                        pendingFileCallback = null
+                        callback(emptyList())
                     }
-                } catch (_: Exception) {
-                    pendingFileCallback = null
-                    callback(emptyList())
                 }
             },
             launchFolderPicker = { callback ->
@@ -864,7 +982,7 @@ class MainActivity : AppCompatActivity() {
                             activeBridgePort = port
                             port.setDelegate(object : WebExtension.PortDelegate {
                                 override fun onPortMessage(message: Any, port: WebExtension.Port) {
-                                    sendBridgeComfortMode(prefs.comfortCssEnabled)
+                                    handleBridgeReply(message)
                                 }
 
                                 override fun onDisconnect(port: WebExtension.Port) {
@@ -874,6 +992,7 @@ class MainActivity : AppCompatActivity() {
                                 }
                             })
                             sendBridgeComfortMode(prefs.comfortCssEnabled)
+                            flushPendingSharedImagesIfReady()
                         }
                     },
                     AntigravityApp.BRIDGE_NAME
@@ -900,6 +1019,145 @@ class MainActivity : AppCompatActivity() {
         try {
             port.postMessage(payload)
         } catch (_: Exception) {
+        }
+    }
+
+    private fun handleBridgeReply(message: Any) {
+        val json = message as? JSONObject
+        val type = json?.optString("type", "") ?: ""
+        when (type) {
+            "ready" -> {
+                sendBridgeComfortMode(prefs.comfortCssEnabled)
+                flushPendingSharedImagesIfReady()
+            }
+            "attachResult" -> {
+                val ok = json?.optBoolean("ok", false) == true
+                val count = json?.optInt("count", 0) ?: 0
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    val msg = when {
+                        ok && count > 1 -> "$count imágenes adjuntadas al chat"
+                        ok -> "Imagen adjuntada al chat"
+                        else -> "No se pudo adjuntar aquí; toca el botón '+' del chat"
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+            else -> sendBridgeComfortMode(prefs.comfortCssEnabled)
+        }
+    }
+
+    private fun launchCameraWithPermissionCheck() {
+        val hasCamera = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasCamera) {
+            launchCameraCapture()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchCameraCapture() {
+        try {
+            val (photoFile, contentUri) = UploadFileStaging.createCameraCaptureTarget(this)
+            pendingCameraFile = photoFile
+            takePictureLauncher.launch(contentUri)
+        } catch (_: Exception) {
+            pendingCameraFile = null
+            val cb = pendingFileCallback
+            pendingFileCallback = null
+            cb?.invoke(emptyList())
+            Toast.makeText(this, "No se pudo abrir la cámara", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun handleIncomingShareIntent(intent: Intent?) {
+        if (intent == null) return
+        val uris: List<Uri> = when (intent.action) {
+            Intent.ACTION_SEND -> {
+                val u = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                }
+                listOfNotNull(u)
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+                } else {
+                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+                }
+            }
+            else -> emptyList()
+        }.filter { it.scheme.equals("content", ignoreCase = true) }.take(5)
+
+        if (uris.isNotEmpty()) {
+            injectImagesIntoChat(uris)
+        }
+    }
+
+    private fun flushPendingSharedImagesIfReady() {
+        val queued = pendingSharedImageUris
+        if (queued.isEmpty()) return
+        if (activeBridgePort == null || !SecurityPolicy.isStrictAntigravityOrigin(uiState.currentUrl)) return
+        pendingSharedImageUris = emptyList()
+        mainHandler.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                injectImagesIntoChat(queued)
+            }
+        }, 450L)
+    }
+
+    private fun injectImagesIntoChat(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val port = activeBridgePort
+        if (port == null || !SecurityPolicy.isStrictAntigravityOrigin(uiState.currentUrl)) {
+            pendingSharedImageUris = uris
+            Toast.makeText(this, "Esperando a que cargue el chat para adjuntar...", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(
+            this,
+            if (uris.size > 1) "Adjuntando ${uris.size} imágenes..." else "Adjuntando imagen...",
+            Toast.LENGTH_SHORT
+        ).show()
+
+        val appCtx = applicationContext
+        app.ioExecutor.execute {
+            val encodedList = uris.mapNotNull { uri ->
+                UploadFileStaging.encodeImageForBridge(appCtx, uri)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val livePort = activeBridgePort
+                if (encodedList.isEmpty() || livePort == null) {
+                    Toast.makeText(this, "No se pudo leer la imagen", Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                val filesJson = JSONArray()
+                for (img in encodedList) {
+                    filesJson.put(
+                        JSONObject()
+                            .put("name", img.name)
+                            .put("mimeType", img.mimeType)
+                            .put("base64", img.base64)
+                    )
+                }
+                val payload = JSONObject()
+                    .put("action", "attachImages")
+                    .put("files", filesJson)
+                try {
+                    livePort.postMessage(payload)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to post attachImages to bridge", e)
+                    Toast.makeText(this, "Error al enviar la imagen al chat", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -1094,6 +1352,12 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
+                    uiState.showAttachChooser -> {
+                        uiState = uiState.copy(showAttachChooser = false)
+                        val cb = pendingFileCallback
+                        pendingFileCallback = null
+                        cb?.invoke(emptyList())
+                    }
                     uiState.showControlSheet -> {
                         uiState = uiState.copy(showControlSheet = false)
                     }

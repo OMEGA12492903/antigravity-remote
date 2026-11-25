@@ -45,7 +45,7 @@
     }
   }
 
-  function focusChatInput() {
+  function findPrimaryComposer() {
     const selectors = [
       'textarea:not([disabled]):not([readonly])',
       '[contenteditable="true"]',
@@ -60,14 +60,104 @@
         }
       }
     }
-    if (inputs.length === 0) return false;
-
-    // The primary chat composer is typically the lowest visible input on screen
+    if (inputs.length === 0) return null;
     inputs.sort((a, b) => b.bottom - a.bottom);
-    const composer = inputs[0].el;
+    return inputs[0].el;
+  }
+
+  function focusChatInput() {
+    const composer = findPrimaryComposer();
+    if (!composer) return false;
     composer.scrollIntoView({ behavior: "smooth", block: "center" });
     composer.focus();
     return true;
+  }
+
+  function base64ToFile(name, mimeType, base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new File([bytes], name || "image.jpg", {
+      type: mimeType || "image/jpeg",
+      lastModified: Date.now()
+    });
+  }
+
+  function attachFilesToChat(fileItems) {
+    if (!Array.isArray(fileItems) || fileItems.length === 0) {
+      safePost({ type: "attachResult", ok: false, count: 0 });
+      return;
+    }
+
+    let files;
+    try {
+      files = fileItems.map((item) => base64ToFile(item.name, item.mimeType, item.base64));
+    } catch (_) {
+      safePost({ type: "attachResult", ok: false, count: 0 });
+      return;
+    }
+
+    // Strategy 1: Populate existing <input type="file"> if present in the DOM
+    const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'))
+      .filter((el) => !el.disabled);
+    if (fileInputs.length > 0) {
+      const targetInput =
+        fileInputs.find((el) => {
+          const acc = (el.getAttribute("accept") || "").toLowerCase();
+          return !acc || acc.includes("image") || acc.includes("*/*");
+        }) || fileInputs[0];
+
+      try {
+        const dt = new DataTransfer();
+        const limit = targetInput.multiple ? files.length : 1;
+        for (let i = 0; i < limit; i++) {
+          dt.items.add(files[i]);
+        }
+        targetInput.files = dt.files;
+        targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+        targetInput.dispatchEvent(new Event("change", { bubbles: true }));
+        safePost({ type: "attachResult", ok: true, count: limit, via: "input" });
+        return;
+      } catch (_) {
+        // Fall through to paste/drop strategies
+      }
+    }
+
+    // Strategy 2: Focus composer and dispatch a native ClipboardEvent("paste")
+    const composer = findPrimaryComposer();
+    if (composer) {
+      composer.focus();
+    }
+    const targetEl = composer || document.activeElement || document.body;
+
+    try {
+      const dt = new DataTransfer();
+      for (const f of files) dt.items.add(f);
+      const pasteEvent = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dt
+      });
+      const notCancelled = targetEl.dispatchEvent(pasteEvent);
+
+      // If paste wasn't intercepted (defaultPrevented === false), also try DragEvent("drop")
+      if (notCancelled) {
+        const dropDt = new DataTransfer();
+        for (const f of files) dropDt.items.add(f);
+        const dropEvent = new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dropDt
+        });
+        targetEl.dispatchEvent(dropEvent);
+      }
+
+      safePost({ type: "attachResult", ok: true, count: files.length, via: "paste" });
+    } catch (_) {
+      safePost({ type: "attachResult", ok: false, count: 0 });
+    }
   }
 
   function handleNativeMessage(msg) {
@@ -81,6 +171,9 @@
         break;
       case "focusInput":
         focusChatInput();
+        break;
+      case "attachImages":
+        attachFilesToChat(msg.files);
         break;
       case "ping":
         safePost({ type: "pong", url: window.location.href });
