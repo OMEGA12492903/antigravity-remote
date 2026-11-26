@@ -94,6 +94,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingActivityResult: GeckoResult<Intent>? = null
     private var pendingEnableKeepAliveAfterPermission = false
     private var pendingSharedImageUris: List<Uri> = emptyList()
+    // Layer-3 fallback: if content.js clicks Antigravity's native attach button, auto-supply staged file:// URIs
+    private var autoSupplyStagedUris: List<Uri> = emptyList()
+    private var autoSupplyExpiresAtMs: Long = 0L
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -935,7 +938,27 @@ class MainActivity : AppCompatActivity() {
         session.promptDelegate = GeckoPromptHandler(
             activity = this,
             ioExecutor = app.ioExecutor,
-            launchFilePicker = { allowMultiple, mimeTypes, callback ->
+            launchFilePicker = fp@{ allowMultiple, mimeTypes, callback ->
+                // Check Layer-3 auto-supply from 1-tap photo / Share sheet first
+                val now = System.currentTimeMillis()
+                val autoUris = autoSupplyStagedUris
+                if (autoUris.isNotEmpty() && now <= autoSupplyExpiresAtMs) {
+                    autoSupplyStagedUris = emptyList()
+                    autoSupplyExpiresAtMs = 0L
+                    callback(if (allowMultiple) autoUris else listOf(autoUris.first()))
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) {
+                            val msg = if (autoUris.size > 1 && allowMultiple) {
+                                "${autoUris.size} imágenes adjuntadas al chat"
+                            } else {
+                                "Imagen adjuntada al chat"
+                            }
+                            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    return@fp
+                }
+
                 // Dismiss any previous unresolved file prompt before showing the fast attach chooser
                 pendingFileCallback?.invoke(emptyList())
                 pendingFileCallback = callback
@@ -1033,12 +1056,22 @@ class MainActivity : AppCompatActivity() {
             "attachResult" -> {
                 val ok = json?.optBoolean("ok", false) == true
                 val count = json?.optInt("count", 0) ?: 0
+                val via = json?.optString("via", "") ?: ""
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (ok && via == "native_button") {
+                        // Layer 3 clicked the web attach button; either onFilePrompt auto-supplies
+                        // or the web menu opened (e.g. "Upload file"). Wait silently without lying.
+                        return@runOnUiThread
+                    }
+                    if (ok) {
+                        autoSupplyStagedUris = emptyList()
+                        autoSupplyExpiresAtMs = 0L
+                    }
                     val msg = when {
                         ok && count > 1 -> "$count imágenes adjuntadas al chat"
                         ok -> "Imagen adjuntada al chat"
-                        else -> "No se pudo adjuntar aquí; toca el botón '+' del chat"
+                        else -> "Toca el botón '+' del chat para elegir la foto"
                     }
                     Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 }
@@ -1129,6 +1162,7 @@ class MainActivity : AppCompatActivity() {
 
         val appCtx = applicationContext
         app.ioExecutor.execute {
+            val stagedFileUris = UploadFileStaging.stageUrisToLocalFiles(appCtx, uris)
             val encodedList = uris.mapNotNull { uri ->
                 UploadFileStaging.encodeImageForBridge(appCtx, uri)
             }
@@ -1138,6 +1172,11 @@ class MainActivity : AppCompatActivity() {
                 if (encodedList.isEmpty() || livePort == null) {
                     Toast.makeText(this, "No se pudo leer la imagen", Toast.LENGTH_SHORT).show()
                     return@runOnUiThread
+                }
+                // Pre-arm Layer-3 auto-supply for 8 seconds in case content.js falls back to clicking '+'
+                if (stagedFileUris.isNotEmpty()) {
+                    autoSupplyStagedUris = stagedFileUris
+                    autoSupplyExpiresAtMs = System.currentTimeMillis() + 8_000L
                 }
                 val filesJson = JSONArray()
                 for (img in encodedList) {
